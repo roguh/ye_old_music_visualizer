@@ -1,5 +1,6 @@
 import logging
 import time
+from scipy.signal import find_peaks
 
 import matplotlib.animation as animation
 import matplotlib.pyplot as plt
@@ -8,7 +9,7 @@ import pyaudio
 
 logging.basicConfig(format="%(levelname)s: %(message)s", level=logging.INFO)
 
-MAXIMUM_FFT_MAGNITUDE = 2e7
+MAXIMUM_FFT_MAGNITUDE = 4e7
 
 DEFAULT_FRAMES_PER_BUFFER = 1024
 
@@ -145,6 +146,7 @@ def realtime_plot():
     figure.canvas.mpl_connect("close_event", on_close)
 
     (line,) = ax.plot(x, y)
+    (line2,) = ax.plot([], [], "bo")
 
     plt.ylim(0, MAXIMUM_FFT_MAGNITUDE)
 
@@ -155,9 +157,19 @@ def realtime_plot():
 
     try:
         while not matplotlib_closed and stream.is_active():
+            if buffer is None:
+                continue
             y = ffilter(realtimefft(buffer, format))
 
             line.set_ydata(y)
+
+            # Find the top 4 values
+            # top = np.argpartition(-y, 4)[:4]
+
+            # Find local maxima
+            top, _ = find_peaks(y, height=1e6, distance=len(x) // 20)
+            line2.set_ydata(y[top])
+            line2.set_xdata(x[top])
 
             figure.canvas.draw()
             figure.canvas.flush_events()
@@ -170,6 +182,8 @@ def realtime_plot():
         stream.close()
 
     logging.info("STOPPED")
+
+    return x, y
 
 
 if __name__ == "__main__":
