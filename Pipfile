@@ -9,6 +9,8 @@ numpy = "*"
 ipython = "*"
 matplotlib = "*"
 scipy = "*"
+pyglet = "*"
+palettable = "*"
 
 [dev-packages]
 
