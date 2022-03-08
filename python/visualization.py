@@ -194,20 +194,23 @@ class BarVisualization:
 class Fancy:
     def __init__(self, _audio_input: audio_input.AudioInput):
         self.audio_input = _audio_input
-        self.batch = pyglet.graphics.Batch()
+        self.batches = [
+            pyglet.graphics.Batch() for _ in range(audio_input.MAX_NOTABLE_FREQUENCIES)
+        ]
 
-        self.max_rows = len(self.audio_input.x)
+        self.max_rows = len(self.audio_input.x) // 3
+        self.max_ix = len(self.audio_input.x)
 
         self.rows = deque()
 
-    def get_square_height(self):
-        return window.height / self.max_rows
+    def get_square_height(self, ix):
+        return window.height / self.max_ix * np.log(self.max_ix / (ix + 1))
 
     def get_square_width(self):
-        return window.width / len(self.audio_input.x)
+        return np.log(self.max_ix) / 4 * window.width / self.max_ix
 
     def get_row(self, peak_ixs):
-        pixels = []
+        squares = []
         # pixels = [
         #    pyglet.shapes.Rectangle(
         #        x=self.map_ix(ix),
@@ -224,31 +227,30 @@ class Fancy:
         #    pixel.color = magnitude_to_color(np.log(y), np.log(self.audio_input.max_y))
 
         for order, ix in enumerate(peak_ixs):
-            pixel = pyglet.shapes.Rectangle(
+            square = pyglet.shapes.Rectangle(
                 y=self.map_ix(ix),
-                x=self.map_y(len(self.rows)),
-                height=self.get_square_height(),
+                x=self.map_y(len(self.rows), ix),
+                height=self.get_square_height(ix),
                 width=self.get_square_width(),
                 color=notable_freq_to_color(order),
-                batch=self.batch,
+                batch=self.batches[order],
             )
-            pixels.append(pixel)
+            squares.insert(0, square)
 
-        return pixels
+        return squares
 
     def update_squares(self):
-
         for y, row in enumerate(self.rows):
-            for square in row:
-                square.x = self.map_y(y)
-                square.height = self.get_square_height()
+            for ix, square in enumerate(row):
+                square.x = self.map_y(y, ix)
+                square.height = self.get_square_height(ix)
                 square.width = self.get_square_width()
 
     def map_ix(self, ix):
         return window.width * ix / len(self.audio_input.x)
 
-    def map_y(self, y):
-        return self.get_square_height() * y
+    def map_y(self, y, ix):
+        return window.height / self.max_rows * y
 
     def update(self, dt):
         peak_ixs, _ = self.audio_input.peaks()
@@ -261,7 +263,8 @@ class Fancy:
         self.update_squares()
 
     def on_draw(self):
-        self.batch.draw()
+        for batch in reversed(self.batches):
+            batch.draw()
 
 
 def run(audio_input_instance):
