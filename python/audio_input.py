@@ -1,6 +1,7 @@
 import logging
 import time
 from collections import deque
+from copy import deepcopy
 
 import numpy as np
 import pyaudio
@@ -18,6 +19,13 @@ MAX_NOTABLE_FREQUENCIES = 4
 MAX_ECHO_BUFFER = 1000
 
 
+def check_status(status):
+    if status == 4:
+        print("UNDERRUN!")
+        return
+    assert status == 0, status
+
+
 def sort_notable(ix, y):
     # Sort in decreasing order
     sorted_ix = np.argsort(-y)
@@ -29,7 +37,7 @@ def sort_notable(ix, y):
 
 class AudioInput:
     def __init__(self):
-        self.frames_per_buffer = 1024
+        self.frames_per_buffer = 512
 
         self.pyaudio_obj = pyaudio.PyAudio()
 
@@ -53,34 +61,29 @@ class AudioInput:
         new_rate = self.rate
         # TODO adjustable rate factor (max Hz of input...)
         # try 2, 4, 0.5...
-        for rate_factor in [1]:
-            new_rate = int(self.rate * rate_factor)
-            try:
-                self.in_stream = self.pyaudio_obj.open(
-                    input=True,
-                    channels=1,
-                    # TODO configurable, None is default
-                    input_device_index=None,
-                    rate=new_rate,
-                    format=self.format,
-                    frames_per_buffer=self.frames_per_buffer,
-                    stream_callback=self.receive_audio,
-                )
-                break
-            except Exception:
-                logging.warning(
-                    "Unable to use a higher rate of %s", new_rate, exc_info=True
-                )
-        self.rate = new_rate
-        logging.info(
-            "Input format: %s %s %s", self.format, self.rate, self.frames_per_buffer
+        self.in_stream = self.pyaudio_obj.open(
+            input=True,
+            channels=1,
+            # TODO configurable, None is default
+            input_device_index=None,
+            rate=self.rate,
+            format=self.format,
+            frames_per_buffer=self.frames_per_buffer,
+            stream_callback=self.receive_audio,
         )
+        logging.info(
+            "Input: pyaudio format=%s, %sHz, frames per buffer=%s",
+            self.format,
+            self.rate,
+            self.frames_per_buffer,
+        )
+        logging.info("Input latency: %s", self.in_stream.get_input_latency())
 
         # Whether to echo the input to the output device
         self.echo = True
 
         # Don't play until X seconds have gone by...
-        self.echo_delay_seconds = 1
+        self.echo_delay_seconds = 0
         self.echo_buffer = deque()
 
         self.output_frame_count = None
@@ -97,6 +100,10 @@ class AudioInput:
                 format=self.format,
                 frames_per_buffer=self.frames_per_buffer,
                 stream_callback=self.send_audio,
+            )
+            logging.info("Output device opened")
+            logging.info(
+                "Output device latency: %s", self.out_stream.get_output_latency()
             )
         else:
             self.out_stream = None
@@ -125,17 +132,19 @@ class AudioInput:
 
         # THIS FUNCTION MUST BE VERY FAST
         # TODO add option to ignore exceptions
+        # TODO ignore status==4, underrun error
         assert frame_count == self.frames_per_buffer, (
             frame_count,
             self.frames_per_buffer,
         )
-        assert status == 0, status
+        check_status(status)
 
         self.input_buffer = in_data
 
         # TODO adjust MAX_ECHO_BUFFER bsaed on echo time
+        self.output_buffer = deepcopy(self.input_buffer)
         if self.echo and len(self.echo_buffer) < MAX_ECHO_BUFFER:
-            self.echo_buffer.append((time.time(), in_data))
+            self.echo_buffer.append((self.input_time, self.output_buffer))
 
         return (None, pyaudio.paContinue)
 
@@ -146,7 +155,7 @@ class AudioInput:
             frame_count,
             self.frames_per_buffer,
         )
-        assert status == 0, status
+        check_status(status)
 
         if self.output_buffer is not None:
             output_buffer = self.output_buffer
@@ -177,8 +186,6 @@ class AudioInput:
         )
 
         if self.echo:
-            self.output_buffer = self.input_buffer
-
             if self.echo_delay_seconds > 0:
                 oldest_buffer_age = -1
                 if len(self.echo_buffer) > 0:
@@ -202,12 +209,14 @@ class AudioInput:
             self.out_stream.start_stream()
 
     def shutdown(self):
-        logging.info("Closing audio stream")
+        logging.info("Closing audio stream(s)")
         self.in_stream.stop_stream()
         self.in_stream.close()
+        logging.info("Input audio stream closed")
         if self.out_stream is not None:
             self.out_stream.stop_stream()
             self.out_stream.close()
+            logging.info("Output audio stream closed")
 
     def top_magnitudes(self):
         top = np.argpartition(-self.y, MAX_NOTABLE_FREQUENCIES)[
@@ -217,6 +226,6 @@ class AudioInput:
 
     def peaks(self):
         top, _ = find_peaks(
-            self.y[:50], height=self.min_y * self.max_y
+            self.y, height=self.min_y * self.max_y
         )  # , distance=len(self.x) // )
         return sort_notable(top, self.y[top])
