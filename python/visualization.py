@@ -1,4 +1,6 @@
 import logging
+import math
+import time
 from collections import deque
 from typing import Tuple
 
@@ -9,7 +11,7 @@ import pyglet
 import audio_input
 
 loop = pyglet.app.EventLoop()
-window = pyglet.window.Window(800, 800, "FFT")
+window = pyglet.window.Window(1600, 800, "FFT")
 
 Color = Tuple[int, int, int]
 
@@ -38,6 +40,41 @@ def magnitude_to_color(mag: float, max_mag: float) -> Color:
     )
 
 
+class MaxFrequenciesText:
+    def __init__(self, _audio_input: audio_input.AudioInput):
+        self.last_update_time = 0
+        self.update_period_seconds = 0.25
+        self.audio_input = _audio_input
+        self.label = pyglet.text.Label(
+            "Max frequencies",
+            font_name="Times New Roman",
+            font_size=14,
+            x=24,
+            y=0,
+            anchor_x="left",
+            anchor_y="top",
+            multiline=True,
+            width=window.width,
+        )
+        self.peaks = (), ()
+
+    def update(self, dt):
+        if time.time() - self.last_update_time > self.update_period_seconds:
+            self.peaks = self.audio_input.peaks()
+
+    def get_peaks_description(self):
+        def hertz(ix):
+            return f"{self.audio_input.x[ix]:0.2f}"
+
+        return "\n".join(f"{hertz(ix)}Hz" for ix, y in zip(*self.peaks))
+
+    def draw(self):
+        self.label.text = self.get_peaks_description()
+        self.label.y = window.height - self.label.font_size * 2
+        self.label.width = window.width
+        self.label.draw()
+
+
 class AudioVisualization:
     def __init__(self, _audio_input: audio_input.AudioInput):
         self.audio_input = _audio_input
@@ -50,6 +87,7 @@ class AudioVisualization:
         )
 
         self.fps_display = pyglet.window.FPSDisplay(window)
+        self.max_freqs = MaxFrequenciesText(self.audio_input)
         self.visualizations = [
             vis(self.audio_input) for vis in [BarVisualization, Fancy]
         ]
@@ -65,12 +103,14 @@ class AudioVisualization:
 
     def update(self, dt):
         self.audio_input.update_y()
+        self.max_freqs.update(dt)
         for vis in self.visualizations:
             vis.update(dt)
 
     def on_draw(self):
         window.clear()
         self.fps_display.draw()
+        self.max_freqs.draw()
         self.visualizations[self.vis].on_draw()
 
     def shutdown(self):
@@ -83,7 +123,9 @@ class AudioVisualization:
         self.shutdown()
 
     def on_resize(self, width, height):
-        logging.debug("Resize W: %s H: %s", width, height)
+        logging.debug(
+            "Resize W: %s H: %s (%s x %s)", width, height, window.width, window.height
+        )
 
         self.visualizations[self.vis].on_resize(width, height)
 
@@ -111,6 +153,9 @@ class BarVisualization:
 
         self.batch = pyglet.graphics.Batch()
         self.labels = pyglet.graphics.Batch()
+
+        self.width = window.width
+        self.height = window.height
 
         self.bars = [
             pyglet.shapes.Rectangle(
@@ -150,10 +195,13 @@ class BarVisualization:
         return 0.9 * window.height * y / self.audio_input.max_y
 
     def map_ix(self, ix):
-        return window.width * ix / len(self.audio_input.x)
+        hz = self.audio_input.x[ix]
+        v = math.log10(self.audio_input.max_x / hz) / 2
+        # v = math.log10(self.audio_input.max_ix / (1 + ix)) / 2
+        return v * window.width
 
     def update_bars(self):
-        width = window.width / len(self.audio_input.x)
+        width = self.width / len(self.audio_input.x)
         for ix, (rect, y) in enumerate(zip(self.bars, self.audio_input.y)):
             rect.height = self.map_y(y)
             rect.x = self.map_ix(ix)
@@ -168,15 +216,15 @@ class BarVisualization:
         ):
             circle.x = self.map_ix(ix)
             circle.y = self.map_y(y)
-            circle.radius = max(5, min(window.width, window.height) * 0.01)
+            circle.radius = max(5, min(self.width, self.height) * 0.01)
             circle.color = notable_freq_to_color(freq_count)
 
         for circle in self.notable_frequencies[freq_count:]:
             circle.x = -circle.radius * 2
 
     def update_labels(self):
-        self.label.x = window.width // 2
-        self.label.y = window.height - self.label.font_size
+        self.label.x = self.width // 2
+        self.label.y = self.height - self.label.font_size
 
     def update(self, dt):
         self.update_bars()
@@ -184,7 +232,8 @@ class BarVisualization:
         self.update_labels()
 
     def on_resize(self, width, height):
-        pass
+        self.width = width
+        self.height = height
 
     def on_draw(self):
         self.batch.draw()
@@ -198,16 +247,19 @@ class Fancy:
             pyglet.graphics.Batch() for _ in range(audio_input.MAX_NOTABLE_FREQUENCIES)
         ]
 
-        self.max_rows = len(self.audio_input.x) // 3
+        self.max_rows = len(self.audio_input.x)
         self.max_ix = len(self.audio_input.x)
 
         self.rows = deque()
+
+        self.width = window.width
+        self.height = window.height
 
     def get_square_height(self, ix):
         return window.height / self.max_ix * np.log(self.max_ix / (ix + 1))
 
     def get_square_width(self):
-        return np.log(self.max_ix) / 4 * window.width / self.max_ix
+        return np.log(self.max_ix) / 4 * self.width / self.max_ix
 
     def get_row(self, peak_ixs):
         squares = []
@@ -247,10 +299,10 @@ class Fancy:
                 square.width = self.get_square_width()
 
     def map_ix(self, ix):
-        return window.width * ix / len(self.audio_input.x)
+        return self.width * ix / self.max_rows
 
     def map_y(self, y, ix):
-        return window.height / self.max_rows * y
+        return self.height / self.max_rows * y
 
     def update(self, dt):
         peak_ixs, _ = self.audio_input.peaks()
@@ -260,6 +312,8 @@ class Fancy:
         self.update_squares()
 
     def on_resize(self, width, height):
+        self.width = width
+        self.height = height
         self.update_squares()
 
     def on_draw(self):
